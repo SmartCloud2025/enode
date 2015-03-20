@@ -2,6 +2,7 @@
 using System.Data;
 using System.Data.SqlClient;
 using System.Linq;
+using Dapper;
 using ECommon.Dapper;
 using ECommon.Utilities;
 using ENode.Configurations;
@@ -38,7 +39,6 @@ namespace ENode.Infrastructure.Impl.SQL
         {
             using (var connection = GetConnection())
             {
-                connection.Open();
                 var count = connection.QueryList(new { LockKey = lockKey }, _lockKeyTable).Count();
                 if (count == 0)
                 {

@@ -1,7 +1,7 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Data.SqlClient;
 using System.Linq;
+using System.Threading.Tasks;
 using ECommon.Components;
 using ECommon.Dapper;
 using ECommon.Serializing;
@@ -19,8 +19,10 @@ namespace ENode.Commanding.Impl
         private readonly string _connectionString;
         private readonly string _commandTable;
         private readonly string _primaryKeyName;
-        private readonly IBinarySerializer _binarySerializer;
-        private readonly ITypeCodeProvider<ICommand> _commandTypeCodeProvider;
+        private readonly IJsonSerializer _jsonSerializer;
+        private readonly ITypeCodeProvider _typeCodeProvider;
+        private readonly IEventSerializer _eventSerializer;
+        private readonly IOHelper _ioHelper;
 
         #region Constructors
 
@@ -37,8 +39,10 @@ namespace ENode.Commanding.Impl
             _connectionString = setting.ConnectionString;
             _commandTable = setting.TableName;
             _primaryKeyName = setting.PrimaryKeyName;
-            _binarySerializer = ObjectContainer.Resolve<IBinarySerializer>();
-            _commandTypeCodeProvider = ObjectContainer.Resolve<ITypeCodeProvider<ICommand>>();
+            _jsonSerializer = ObjectContainer.Resolve<IJsonSerializer>();
+            _typeCodeProvider = ObjectContainer.Resolve<ITypeCodeProvider>();
+            _eventSerializer = ObjectContainer.Resolve<IEventSerializer>();
+            _ioHelper = ObjectContainer.Resolve<IOHelper>();
         }
 
         #endregion
@@ -51,47 +55,121 @@ namespace ENode.Commanding.Impl
         {
             var record = ConvertTo(handledCommand);
 
-            using (var connection = GetConnection())
+            return _ioHelper.TryIOFunc(() =>
             {
-                connection.Open();
-                try
+                using (var connection = GetConnection())
                 {
-                    connection.Insert(record, _commandTable);
-                    return CommandAddResult.Success;
-                }
-                catch (SqlException ex)
-                {
-                    if (ex.Number == 2627)
+                    try
                     {
-                        if (ex.Message.Contains(_primaryKeyName))
-                        {
-                            return CommandAddResult.DuplicateCommand;
-                        }
+                        connection.Insert(record, _commandTable);
+                        return CommandAddResult.Success;
                     }
-                    throw;
+                    catch (SqlException ex)
+                    {
+                        if (ex.Number == 2627)
+                        {
+                            if (ex.Message.Contains(_primaryKeyName))
+                            {
+                                return CommandAddResult.DuplicateCommand;
+                            }
+                        }
+                        throw;
+                    }
                 }
-            }
+            }, "AddCommand");
         }
         public void Remove(string commandId)
         {
-            using (var connection = GetConnection())
+            _ioHelper.TryIOAction(() =>
             {
-                connection.Open();
-                connection.Delete(new { CommandId = commandId }, _commandTable);
-            }
+                using (var connection = GetConnection())
+                {
+                    connection.Delete(new { CommandId = commandId }, _commandTable);
+                }
+            }, "RemoveCommand");
         }
         public HandledCommand Get(string commandId)
         {
-            using (var connection = GetConnection())
+            var record = _ioHelper.TryIOFunc(() =>
             {
-                connection.Open();
-                var record = connection.QueryList<CommandRecord>(new { CommandId = commandId }, _commandTable).SingleOrDefault();
-                if (record != null)
+                using (var connection = GetConnection())
                 {
-                    return ConvertFrom(record);
+                    return connection.QueryList<CommandRecord>(new { CommandId = commandId }, _commandTable).SingleOrDefault();
                 }
-                return null;
+            }, "GetCommand");
+
+            if (record != null)
+            {
+                return ConvertFrom(record);
             }
+            return null;
+        }
+
+        public Task<AsyncTaskResult<CommandAddResult>> AddAsync(HandledCommand handledCommand)
+        {
+            var record = ConvertTo(handledCommand);
+
+            return _ioHelper.TryIOFuncAsync<AsyncTaskResult<CommandAddResult>>(async () =>
+            {
+                try
+                {
+                    using (var connection = GetConnection())
+                    {
+                        await connection.InsertAsync(record, _commandTable);
+                        return new AsyncTaskResult<CommandAddResult>(AsyncTaskStatus.Success, null, CommandAddResult.Success);
+                    }
+                }
+                catch (SqlException ex)
+                {
+                    if (ex.Number == 2627 && ex.Message.Contains(_primaryKeyName))
+                    {
+                        return new AsyncTaskResult<CommandAddResult>(AsyncTaskStatus.Success, null, CommandAddResult.DuplicateCommand);
+                    }
+                    return new AsyncTaskResult<CommandAddResult>(AsyncTaskStatus.IOException, ex.Message, CommandAddResult.Failed);
+                }
+                catch (Exception ex)
+                {
+                    return new AsyncTaskResult<CommandAddResult>(AsyncTaskStatus.IOException, ex.Message, CommandAddResult.Failed);
+                }
+            }, "AddCommandAsync");
+        }
+        public Task<AsyncTaskResult> RemoveAsync(string commandId)
+        {
+            return _ioHelper.TryIOFuncAsync<AsyncTaskResult>(async () =>
+            {
+                try
+                {
+                    using (var connection = GetConnection())
+                    {
+                        await connection.DeleteAsync(new { CommandId = commandId }, _commandTable);
+                        return AsyncTaskResult.Success;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return new AsyncTaskResult(AsyncTaskStatus.IOException, ex.Message);
+                }
+            }, "RemoveCommandAsync");
+        }
+        public Task<AsyncTaskResult<HandledCommand>> GetAsync(string commandId)
+        {
+            return _ioHelper.TryIOFuncAsync<AsyncTaskResult<HandledCommand>>(async () =>
+            {
+                try
+                {
+                    using (var connection = GetConnection())
+                    {
+                        var result = await connection.QueryListAsync<CommandRecord>(new { CommandId = commandId }, _commandTable);
+                        var record = result.SingleOrDefault();
+                        var handledCommand = record != null ? ConvertFrom(record) : null;
+                        return new AsyncTaskResult<HandledCommand>(AsyncTaskStatus.Success, handledCommand);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return new AsyncTaskResult<HandledCommand>(AsyncTaskStatus.IOException, ex.Message, null);
+                }
+            }, "GetCommandAsync");
         }
 
         #endregion
@@ -104,40 +182,38 @@ namespace ENode.Commanding.Impl
         }
         private CommandRecord ConvertTo(HandledCommand handledCommand)
         {
-            var handledAggregateCommand = handledCommand as HandledAggregateCommand;
             return new CommandRecord
             {
                 CommandId = handledCommand.Command.Id,
-                CommandTypeCode = _commandTypeCodeProvider.GetTypeCode(handledCommand.Command.GetType()),
-                AggregateRootId = handledAggregateCommand != null ? handledAggregateCommand.AggregateRootId : null,
-                AggregateRootTypeCode = handledAggregateCommand != null ? handledAggregateCommand.AggregateRootTypeCode : 0,
+                CommandTypeCode = _typeCodeProvider.GetTypeCode(handledCommand.Command.GetType()),
+                AggregateRootId = handledCommand.AggregateRootId,
+                AggregateRootTypeCode = handledCommand.AggregateRootTypeCode,
                 SourceId = handledCommand.SourceId,
                 SourceType = handledCommand.SourceType,
                 Timestamp = DateTime.Now,
-                Payload = _binarySerializer.Serialize(handledCommand.Command),
-                Events = _binarySerializer.Serialize(handledCommand.Events)
+                Payload = _jsonSerializer.Serialize(handledCommand.Command),
+                Message = handledCommand.Message != null ? _jsonSerializer.Serialize(handledCommand.Message) : null,
+                MessageTypeCode = handledCommand.Message != null ? _typeCodeProvider.GetTypeCode(handledCommand.Message.GetType()) : 0,
             };
         }
         private HandledCommand ConvertFrom(CommandRecord record)
         {
-            var commandType = _commandTypeCodeProvider.GetType(record.CommandTypeCode);
-            if (commandType == typeof(HandledAggregateCommand))
+            var commandType = _typeCodeProvider.GetType(record.CommandTypeCode);
+            var message = default(IApplicationMessage);
+
+            if (record.MessageTypeCode > 0)
             {
-                return new HandledAggregateCommand(
-                    _binarySerializer.Deserialize<ICommand>(record.Payload),
-                    record.SourceId,
-                    record.SourceType,
-                    record.AggregateRootId,
-                    record.AggregateRootTypeCode);
+                var messageType = _typeCodeProvider.GetType(record.MessageTypeCode);
+                message = _jsonSerializer.Deserialize(record.Message, messageType) as IApplicationMessage;
             }
-            else
-            {
-                return new HandledCommand(
-                    _binarySerializer.Deserialize<ICommand>(record.Payload),
-                    record.SourceId,
-                    record.SourceType,
-                    _binarySerializer.Deserialize<IEnumerable<IEvent>>(record.Events));
-            }
+
+            return new HandledCommand(
+                _jsonSerializer.Deserialize(record.Payload, commandType) as ICommand,
+                record.SourceId,
+                record.SourceType,
+                record.AggregateRootId,
+                record.AggregateRootTypeCode,
+                message);
         }
 
         #endregion
@@ -151,8 +227,9 @@ namespace ENode.Commanding.Impl
             public string SourceId { get; set; }
             public string SourceType { get; set; }
             public DateTime Timestamp { get; set; }
-            public byte[] Payload { get; set; }
-            public byte[] Events { get; set; }
+            public string Payload { get; set; }
+            public string Message { get; set; }
+            public int MessageTypeCode { get; set; }
         }
     }
 }

@@ -1,39 +1,86 @@
 ﻿using System;
-using System.Collections.Generic;
-using ECommon.Utilities;
+using ENode.Infrastructure;
 
 namespace ENode.Commanding
 {
     /// <summary>Represents an abstract command.
     /// </summary>
     [Serializable]
-    public abstract class Command : ICommand
+    public abstract class Command : Message, ICommand
     {
-        /// <summary>Represents the unique identifier of the command.
+        /// <summary>Represents the associated aggregate root id.
         /// </summary>
-        public string Id { get; set; }
-        /// <summary>Represents the retry count of the command.
-        /// </summary>
-        public int RetryCount { get; set; }
-        /// <summary>Represents the additional information of the command.
-        /// </summary>
-        public IDictionary<string, string> Items { get; set; }
+        public string AggregateRootId { get; set; }
 
         /// <summary>Default constructor.
         /// </summary>
-        protected Command()
+        public Command() : base() { }
+        /// <summary>Parameterized constructor.
+        /// </summary>
+        /// <param name="aggregateRootId"></param>
+        public Command(string aggregateRootId)
         {
-            Id = ObjectId.GenerateNewStringId();
-            RetryCount = 3;
-            Items = new Dictionary<string, string>();
+            if (aggregateRootId == null)
+            {
+                throw new ArgumentNullException("aggregateRootId");
+            }
+            AggregateRootId = aggregateRootId;
         }
 
-        /// <summary>Returns string.Empty by default.
+        /// <summary>Returns the aggregate root id by default.
         /// </summary>
         /// <returns></returns>
-        public virtual object GetKey()
+        public override string GetRoutingKey()
         {
-            return string.Empty;
+            return AggregateRootId;
+        }
+    }
+    /// <summary>Represents an abstract command with generic aggregate root id.
+    /// </summary>
+    [Serializable]
+    public abstract class Command<TAggregateRootId> : Message, ICommand
+    {
+        /// <summary>Represents the associated aggregate root id.
+        /// </summary>
+        public TAggregateRootId AggregateRootId { get; set; }
+
+        /// <summary>Default constructor.
+        /// </summary>
+        public Command() : base() { }
+        /// <summary>Parameterized constructor.
+        /// </summary>
+        /// <param name="aggregateRootId"></param>
+        public Command(TAggregateRootId aggregateRootId)
+        {
+            if (aggregateRootId == null)
+            {
+                throw new ArgumentNullException("aggregateRootId");
+            }
+            AggregateRootId = aggregateRootId;
+        }
+
+        string ICommand.AggregateRootId
+        {
+            get
+            {
+                if (this.AggregateRootId != null)
+                {
+                    return this.AggregateRootId.ToString();
+                }
+                return null;
+            }
+        }
+
+        /// <summary>Returns the aggregate root id by default.
+        /// </summary>
+        /// <returns></returns>
+        public override string GetRoutingKey()
+        {
+            if (!object.Equals(AggregateRootId, default(TAggregateRootId)))
+            {
+                return ((ICommand)this).AggregateRootId;
+            }
+            return null;
         }
     }
 }

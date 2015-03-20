@@ -23,26 +23,36 @@ namespace ENode.Commanding
         /// <summary>Represents the error message if the command is failed.
         /// </summary>
         public string ErrorMessage { get; private set; }
-        /// <summary>Represents the extension information of the command result.
-        /// </summary>
-        public IDictionary<string, string> Items { get; private set; }
 
         /// <summary>Parameterized constructor.
         /// </summary>
-        public CommandResult(CommandStatus status, string commandId, string aggregateRootId, string exceptionTypeName, string errorMessage, IDictionary<string, string> items)
+        public CommandResult(CommandStatus status, string commandId, string aggregateRootId, string exceptionTypeName, string errorMessage)
         {
             Status = status;
             CommandId = commandId;
             AggregateRootId = aggregateRootId;
             ExceptionTypeName = exceptionTypeName;
             ErrorMessage = errorMessage;
-            Items = items ?? new Dictionary<string, string>();
+        }
+
+        /// <summary>Overrides to return the command result info.
+        /// </summary>
+        /// <returns></returns>
+        public override string ToString()
+        {
+            return string.Format("[CommandId={0},Status={1},AggregateRootId={2},ExceptionTypeName={3},ErrorMessage={4}]",
+                CommandId,
+                Status,
+                AggregateRootId,
+                ExceptionTypeName,
+                ErrorMessage);
         }
     }
     /// <summary>Represents the command result status enum.
     /// </summary>
     public enum CommandStatus
     {
+        None = 0,
         Success = 1,
         NothingChanged = 2,
         Failed = 3
